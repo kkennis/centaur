@@ -211,6 +211,7 @@ def _create_container(
         working_dir=workdir,
         volumes={
             _repos_host_dir(): {"bind": "/home/agent/github", "mode": "rw"},
+            "/var/run/docker.sock": {"bind": "/var/run/docker.sock", "mode": "rw"},
         },
         labels=labels,
         **({"name": name} if name else {}),

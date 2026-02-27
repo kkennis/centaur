@@ -433,6 +433,15 @@ def _download_files_to_container(
             with httpx.Client(timeout=30, follow_redirects=True) as client:
                 resp = client.get(url, headers=headers)
                 resp.raise_for_status()
+                content_type = resp.headers.get("content-type", "")
+                if "text/html" in content_type:
+                    log.warning(
+                        "file_download_got_html",
+                        url=url,
+                        name=name,
+                        hint="Bot may be missing files:read scope",
+                    )
+                    continue
                 data = resp.content
         except Exception as exc:
             log.warning("file_download_failed", url=url, error=str(exc))

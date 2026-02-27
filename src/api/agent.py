@@ -193,7 +193,7 @@ def _create_container(
         env.append(f"AGENT_REPO={repo}")
     labels = {
         "agent2": "true",
-        **({"tempo.pool": "true"} if not name else {}),
+        **({"ai2.pool": "true"} if not name else {}),
         **(extra_labels or {}),
     }
     container = client.containers.run(
@@ -475,8 +475,8 @@ class AgentClient:
                 name=f"agent2-{slack_thread_key.replace(':', '-').replace('.', '-')[:40]}",
                 repo=repo,
                 extra_labels={
-                    "tempo.thread": slack_thread_key,
-                    "tempo.harness": harness,
+                    "ai2.thread": slack_thread_key,
+                    "ai2.harness": harness,
                 },
             )
             log.info("spawn_container_created", request_id=rid, thread=slack_thread_key,
@@ -712,7 +712,7 @@ class AgentClient:
         try:
             container = client.containers.get(session["container_id"])
             # Clean up git worktree before removing the container
-            repo = container.labels.get("tempo.repo", "")
+            repo = container.labels.get("ai2.repo", "")
             if repo:
                 repos_dir = _repos_host_dir()
                 repo_path = os.path.join(repos_dir, repo)
@@ -850,11 +850,11 @@ class AgentClient:
         try:
             containers = client.containers.list(filters={"label": "agent2=true"})
             for container in containers:
-                key = container.labels.get("tempo.thread", "")
+                key = container.labels.get("ai2.thread", "")
                 if key and key not in _sessions:
                     _sessions[key] = {
                         "container_id": container.id,
-                        "harness": container.labels.get("tempo.harness", "amp"),
+                        "harness": container.labels.get("ai2.harness", "amp"),
                         "agent_thread_id": None,
                         "state": "idle",
                         "created_at": time.time(),

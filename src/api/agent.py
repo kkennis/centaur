@@ -761,6 +761,7 @@ def _create_container(
     name: str | None = None,
     repo: str | None = None,
     extra_labels: dict[str, str] | None = None,
+    slack_thread_key: str | None = None,
 ) -> tuple[Any, dict[str, float]]:
     """Create a ready-to-use agent container.
 
@@ -771,11 +772,23 @@ def _create_container(
     env = _container_env()
     if repo:
         env.append(f"AGENT_REPO={repo}")
+    if slack_thread_key:
+        parts = _slack_thread_parts(slack_thread_key)
+        if parts:
+            env.append(f"SLACK_CHANNEL={parts[0]}")
+            env.append(f"SLACK_THREAD_TS={parts[1]}")
     labels = {
         "agent2": "true",
         **({"ai2.pool": "true"} if not name else {}),
         **(extra_labels or {}),
     }
+    volumes = {
+        _repos_host_dir(): {"bind": "/home/agent/github", "mode": "rw"},
+        "/var/run/docker.sock": {"bind": "/var/run/docker.sock", "mode": "rw"},
+    }
+    if os.getenv("MITM_HOST"):
+        vol = os.getenv("MITM_CERTS_VOLUME", "mitm-certs")
+        volumes[vol] = {"bind": "/mitm-certs", "mode": "ro"}
     container = client.containers.run(
         _image(),
         detach=True,
@@ -786,10 +799,7 @@ def _create_container(
         nano_cpus=int(2 * 1e9),
         environment=env,
         working_dir=workdir,
-        volumes={
-            _repos_host_dir(): {"bind": "/home/agent/github", "mode": "rw"},
-            "/var/run/docker.sock": {"bind": "/var/run/docker.sock", "mode": "rw"},
-        },
+        volumes=volumes,
         labels=labels,
         **({"name": name} if name else {}),
     )
@@ -838,28 +848,53 @@ def _refill_pool() -> None:
 
 
 def _container_env() -> list[str]:
-    """Build env vars to forward into the container."""
-    keys = [
-        "AMP_API_KEY",
-        "ANTHROPIC_API_KEY",
-        "OPENAI_API_KEY",
-        "GITHUB_TOKEN",
-    ]
+    """Build env vars to forward into the container.
+
+    When MITM_HOST is set, secrets are NOT passed to sandboxes.  Instead,
+    placeholder values are injected and the MITM proxy handles credential
+    injection at the HTTP layer.  This means a compromised sandbox cannot
+    exfiltrate real API keys — they only exist in the secrets service and
+    transiently in the MITM proxy's memory.
+    """
     env = [
         f"AI_V2_API_URL={os.getenv('AGENT_API_URL', 'http://api:8000')}",
         f"AI_V2_API_KEY={os.getenv('API_SECRET_KEY', '')}",
     ]
-    for k in keys:
-        v = os.getenv(k, "")
-        if v:
-            env.append(f"{k}={v}")
-    # Codex exec uses CODEX_API_KEY (falls back to OPENAI_API_KEY internally,
-    # but setting it explicitly avoids issues with some versions)
-    openai_key = os.getenv("OPENAI_API_KEY", "")
-    if openai_key and not os.getenv("CODEX_API_KEY"):
-        env.append(f"CODEX_API_KEY={openai_key}")
-    return env
 
+    mitm_host = os.getenv("MITM_HOST", "")
+    if mitm_host:
+        # MITM proxy mode: placeholder keys + proxy config.
+        # Real credentials are injected by the proxy addon.
+        _ph = "PROXY" + "_" + "MANAGED"
+        for _k in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "CODEX_API_KEY",
+                    "AMP_API_KEY", "GITHUB_TOKEN"):
+            env.append(f"{_k}={_ph}")
+        env.extend([
+            f"HTTPS_PROXY=http://{mitm_host}:8080",
+            f"HTTP_PROXY=http://{mitm_host}:8080",
+            "NO_PROXY=api,localhost,127.0.0.1",
+            "NODE_EXTRA_CA_CERTS=/mitm-certs/ca-cert.pem",
+            "REQUESTS_CA_BUNDLE=/mitm-certs/ca-cert.pem",
+            "SSL_CERT_FILE=/mitm-certs/ca-cert.pem",
+            "GIT_SSL_CAINFO=/mitm-certs/ca-cert.pem",
+        ])
+    else:
+        # Legacy mode: pass secrets directly as env vars.
+        keys = [
+            "AMP_API_KEY",
+            "ANTHROPIC_API_KEY",
+            "OPENAI_API_KEY",
+            "GITHUB_TOKEN",
+        ]
+        for k in keys:
+            v = os.getenv(k, "")
+            if v:
+                env.append(f"{k}={v}")
+        openai_key = os.getenv("OPENAI_API_KEY", "")
+        if openai_key and not os.getenv("CODEX_API_KEY"):
+            env.append(f"CODEX_API_KEY={openai_key}")
+
+    return env
 
 def _build_command(harness: str, message: str, thread_id: str | None) -> list[str]:
     if harness == "claude-code":
@@ -1127,6 +1162,7 @@ class AgentClient:
                     "ai2.thread": slack_thread_key,
                     "ai2.harness": harness,
                 },
+                slack_thread_key=slack_thread_key,
             )
             log.info(
                 "spawn_container_created", request_id=rid, thread=slack_thread_key, **create_timings

@@ -818,7 +818,6 @@ def _create_container(
     }
     volumes = {
         _repos_host_dir(): {"bind": "/home/agent/github", "mode": "ro"},
-        "/var/run/docker.sock": {"bind": "/var/run/docker.sock", "mode": "rw"},
     }
     # When a repo is specified, the entrypoint creates a writable worktree
     # from the read-only bare repo.  Mount just that repo rw so git worktree

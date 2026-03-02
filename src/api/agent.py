@@ -899,13 +899,12 @@ def _container_env() -> list[str]:
     return [
         f"AI_V2_API_URL={os.getenv('AGENT_API_URL', 'http://api:8000')}",
         f"AI_V2_API_KEY={os.getenv('API_SECRET_KEY', '')}",
-        # Stubs must look like valid keys so CLIs use direct-to-API auth
-        # flows (BYOK) instead of provider proxies or interactive login.
-        # The firewall overwrites these at the HTTP level with real keys.
-        "ANTHROPIC_API_KEY=sk-ant-api03-stub000000000000000000000000000000000000000000000000AA",
-        "OPENAI_API_KEY=sk-proj-stub0000000000000000000000000000000000000000000000000000",
-        "AMP_API_KEY=FIREWALL_INJECTED",
-        "GITHUB_TOKEN=ghp_stub0000000000000000000000000000000000000",
+        # Values are set to the secret key name itself. The firewall scans
+        # header values for known key names and replaces them with real secrets.
+        "ANTHROPIC_API_KEY=ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY=OPENAI_API_KEY",
+        "AMP_API_KEY=AMP_API_KEY",
+        "GITHUB_TOKEN=GITHUB_TOKEN",
         f"HTTPS_PROXY=http://{firewall_host}:8080",
         f"HTTP_PROXY=http://{firewall_host}:8080",
         f"https_proxy=http://{firewall_host}:8080",

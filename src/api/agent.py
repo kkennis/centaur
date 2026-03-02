@@ -68,7 +68,7 @@ _execute_locks: dict[str, threading.Lock] = {}
 _execute_locks_guard = threading.Lock()
 
 # Active states that prevent engineer from overwriting a non-engineer session
-_ACTIVE_SESSION_STATES = ("working", "idle", "running")
+_ACTIVE_SESSION_STATES = ("working", "idle", "running", "stopping")
 
 # Graceful shutdown: set by the API lifespan on SIGTERM so active executions
 # can break out of their streaming loops before DB pools are closed.
@@ -1585,7 +1585,16 @@ class AgentClient:
                     )
                     if suggested_name:
                         session["thread_name"] = suggested_name
-                session["state"] = "idle"
+                stop_requested = session.get("state") == "stopping"
+                if stop_requested:
+                    session["state"] = "stopped"
+                    if not result_text.strip():
+                        live_turn["result"] = "Stopped by user."
+                        result_text = live_turn["result"]
+                elif timed_out or (exit_code not in (0, None)):
+                    session["state"] = "error"
+                else:
+                    session["state"] = "idle"
                 session["last_activity"] = time.time()
             _persist_session(session, slack_thread_key)
             # Compute per-turn LLM stats from events
@@ -1927,6 +1936,33 @@ class AgentClient:
             _delete_session(slack_thread_key)
             return {"session_id": slack_thread_key, "status": "interrupted"}
 
+        previous_state = str(session.get("state") or "")
+        if previous_state not in {"running", "working", "stopping"}:
+            return {"error": "No running command to interrupt."}
+
+        turn_to_persist: dict[str, Any] | None = None
+        with _sessions_lock:
+            session["state"] = "stopping"
+            session["last_activity"] = time.time()
+            turns = session.get("turns")
+            if isinstance(turns, list) and turns:
+                last_turn = turns[-1]
+                if isinstance(last_turn, dict) and last_turn.get("finished_at") is None:
+                    events = last_turn.setdefault("events", [])
+                    if isinstance(events, list):
+                        events.append(
+                            {
+                                "type": "status",
+                                "stage": "interrupt.requested",
+                                "source": "api",
+                                "received_at": datetime.now(UTC).isoformat(),
+                            }
+                        )
+                        turn_to_persist = dict(last_turn)
+        _persist_session(session, slack_thread_key)
+        if turn_to_persist is not None:
+            _persist_turn(slack_thread_key, turn_to_persist)
+
         client = _docker_client()
         try:
             container = client.containers.get(session["container_id"])
@@ -1940,10 +1976,25 @@ class AgentClient:
             result = container.exec_run(["pkill", "-INT", "-f", target], detach=False)
             exit_code = result.exit_code if hasattr(result, "exit_code") else None
             if exit_code not in (0,):
+                with _sessions_lock:
+                    if session.get("state") == "stopping":
+                        session["state"] = previous_state
+                        session["last_activity"] = time.time()
+                _persist_session(session, slack_thread_key)
                 return {"error": f"No active {target} process to interrupt."}
         except NotFound:
+            with _sessions_lock:
+                if session.get("state") == "stopping":
+                    session["state"] = previous_state
+                    session["last_activity"] = time.time()
+            _persist_session(session, slack_thread_key)
             return {"error": f"No active container for '{slack_thread_key}'"}
         except Exception as exc:
+            with _sessions_lock:
+                if session.get("state") == "stopping":
+                    session["state"] = previous_state
+                    session["last_activity"] = time.time()
+            _persist_session(session, slack_thread_key)
             return {"error": f"Failed to interrupt run: {exc}"}
 
         return {"session_id": slack_thread_key, "status": "interrupted"}

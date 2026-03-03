@@ -1097,6 +1097,40 @@ def _delete_session(key: str) -> None:
     _pg_write("DELETE FROM agent_sessions WHERE slack_thread_key = %s", (key,))
 
 
+def _mark_session_stopped(key: str, session: dict[str, Any]) -> None:
+    session["state"] = "stopped"
+    session["last_activity"] = time.time()
+    _persist_session(session, key)
+
+
+def _max_turn_id_from_pg(slack_thread_key: str) -> int:
+    aliases = _thread_key_aliases(slack_thread_key)
+    rows = _pg_read(
+        "SELECT COALESCE(MAX(turn_id), 0) AS max_turn_id FROM agent_turns WHERE slack_thread_key = ANY(%s)",
+        (aliases,),
+    )
+    if not rows:
+        return 0
+    try:
+        return int(rows[0].get("max_turn_id") or 0)
+    except Exception:
+        return 0
+
+
+def _next_turn_id(slack_thread_key: str, session: dict[str, Any]) -> int:
+    turns = session.get("turns")
+    in_memory_max = 0
+    if isinstance(turns, list):
+        for turn in turns:
+            if not isinstance(turn, dict):
+                continue
+            try:
+                in_memory_max = max(in_memory_max, int(turn.get("turn_id") or 0))
+            except Exception:
+                continue
+    return max(in_memory_max, _max_turn_id_from_pg(slack_thread_key)) + 1
+
+
 def _docker_client() -> docker.DockerClient:
     return docker.from_env()
 
@@ -1559,8 +1593,8 @@ class AgentClient:
                     container = client.containers.get(existing["container_id"])
                     container.stop(timeout=5)
                     container.remove()
+                _mark_session_stopped(slack_thread_key, existing)
                 pop_session_state(slack_thread_key)
-                _delete_session(slack_thread_key)
                 existing = None
 
         # Reuse existing container if alive
@@ -1731,8 +1765,8 @@ class AgentClient:
                         container = client.containers.get(session["container_id"])
                         container.stop(timeout=5)
                         container.remove()
+                    _mark_session_stopped(slack_thread_key, session)
                     pop_session_state(slack_thread_key)
-                    _delete_session(slack_thread_key)
                     session = None
 
             slot_acquired, queue_wait_s, queue_position = _acquire_execution_slot(
@@ -1839,7 +1873,7 @@ class AgentClient:
                     int(session.get("next_event_seq") or 1),
                     seq_floor,
                 )
-                turn_id = len(session.get("turns", [])) + 1
+                turn_id = _next_turn_id(slack_thread_key, session)
                 live_turn = {
                     "turn_id": turn_id,
                     "user_message": display_message,
@@ -1865,6 +1899,31 @@ class AgentClient:
                     },
                 )
                 session.setdefault("turns", []).append(live_turn)
+            # Persist a turn stub early so in-flight runs survive process crashes.
+            _persist_turn(slack_thread_key, live_turn)
+
+            checkpoint_last_persisted = time.monotonic()
+            events_since_checkpoint = 0
+            checkpoint_interval_s = 3.0
+            checkpoint_event_batch = 20
+
+            def checkpoint_turn(force: bool = False) -> None:
+                nonlocal checkpoint_last_persisted, events_since_checkpoint
+                if (
+                    not force
+                    and events_since_checkpoint < checkpoint_event_batch
+                    and (time.monotonic() - checkpoint_last_persisted) < checkpoint_interval_s
+                ):
+                    return
+                _persist_turn(slack_thread_key, live_turn)
+                checkpoint_last_persisted = time.monotonic()
+                events_since_checkpoint = 0
+
+            def append_live_event(payload: dict[str, Any]) -> None:
+                nonlocal events_since_checkpoint
+                _append_session_event(session, live_turn["events"], payload)
+                events_since_checkpoint += 1
+                checkpoint_turn()
 
             # Use low-level exec API for streaming
             api = client.api
@@ -1949,29 +2008,25 @@ class AgentClient:
                                     for normalized in normalized_events:
                                         normalized["received_at"] = now
                                         normalized["elapsed_s"] = elapsed
-                                        _append_session_event(session, live_turn["events"], normalized)
+                                        append_live_event(normalized)
                                         _emit(normalized)
                                 else:
-                                    _append_session_event(
-                                        session,
-                                        live_turn["events"],
+                                    append_live_event(
                                         {
                                             "type": "raw",
                                             "text": stripped,
                                             "received_at": now,
                                             "elapsed_s": elapsed,
-                                        },
+                                        }
                                     )
                             except json.JSONDecodeError:
-                                _append_session_event(
-                                    session,
-                                    live_turn["events"],
+                                append_live_event(
                                     {
                                         "type": "raw",
                                         "text": stripped,
                                         "received_at": now,
                                         "elapsed_s": elapsed,
-                                    },
+                                    }
                                 )
                 if stderr_chunk:
                     err_buf += stderr_decoder.decode(stderr_chunk)
@@ -1998,24 +2053,20 @@ class AgentClient:
                         for normalized in normalized_events:
                             normalized["received_at"] = now
                             normalized["elapsed_s"] = elapsed
-                            _append_session_event(session, live_turn["events"], normalized)
+                            append_live_event(normalized)
                             _emit(normalized)
                     else:
-                        _append_session_event(
-                            session,
-                            live_turn["events"],
+                        append_live_event(
                             {
                                 "type": "raw",
                                 "text": stripped,
                                 "received_at": now,
                                 "elapsed_s": elapsed,
-                            },
+                            }
                         )
                 except json.JSONDecodeError:
-                    _append_session_event(
-                        session,
-                        live_turn["events"],
-                        {"type": "raw", "text": stripped, "received_at": now, "elapsed_s": elapsed},
+                    append_live_event(
+                        {"type": "raw", "text": stripped, "received_at": now, "elapsed_s": elapsed}
                     )
             if err_buf.strip():
                 stderr_lines.append(err_buf)
@@ -2198,8 +2249,8 @@ class AgentClient:
         except Exception:
             pass
 
+        _mark_session_stopped(slack_thread_key, session)
         pop_session_state(slack_thread_key)
-        _delete_session(slack_thread_key)
         return {"session_id": slack_thread_key, "status": "stopped"}
 
     def threads(self) -> dict[str, Any]:

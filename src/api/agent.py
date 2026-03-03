@@ -397,6 +397,23 @@ def _truncate_slack_message(text: str) -> str:
     return safe_text[:budget].rstrip() + _SLACK_TRUNCATED_SUFFIX
 
 
+_MD_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
+_MD_HEADING_RE = re.compile(r"^#{1,6}\s+(.+)$", re.MULTILINE)
+_MD_BOLD_STAR_RE = re.compile(r"\*\*(.+?)\*\*")
+_MD_BOLD_UNDER_RE = re.compile(r"__(.+?)__")
+_MD_STRIKE_RE = re.compile(r"~~(.+?)~~")
+
+
+def _markdown_to_slack(text: str) -> str:
+    """Convert standard Markdown formatting to Slack mrkdwn."""
+    out = _MD_LINK_RE.sub(r"<\2|\1>", text)
+    out = _MD_HEADING_RE.sub(r"*\1*", out)
+    out = _MD_BOLD_STAR_RE.sub(r"*\1*", out)
+    out = _MD_BOLD_UNDER_RE.sub(r"*\1*", out)
+    out = _MD_STRIKE_RE.sub(r"~\1~", out)
+    return out
+
+
 def _thread_name_from_user_message(raw_message: str) -> str | None:
     text = str(raw_message or "").strip()
     if not text:
@@ -440,7 +457,7 @@ def _post_to_slack(
     if parts is None:
         return
     channel, thread_ts = parts
-    safe_text = _truncate_slack_message(text)
+    safe_text = _truncate_slack_message(_markdown_to_slack(text))
     if not safe_text:
         return
     logger = log.warning if warn_on_error else log.debug

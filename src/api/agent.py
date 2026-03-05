@@ -742,6 +742,19 @@ def _thread_name_from_user_message(raw_message: str) -> str | None:
     return first_line[:_THREAD_NAME_MAX_CHARS].rstrip() or None
 
 
+def _should_treat_as_silent_death(
+    result_text: str,
+    exit_code: int | None,
+    timed_out: bool,
+    session_state: str,
+) -> bool:
+    if timed_out:
+        return False
+    if result_text.strip():
+        return False
+    if exit_code not in (0, None):
+        return False
+    return session_state != "stopping"
 def _post_to_slack(
     thread_key: str,
     text: str,
@@ -2602,6 +2615,30 @@ class AgentClient:
                 if stderr_lines:
                     tail = "\n".join(stderr_lines[-5:])
                     result_text += f"\n```\n{tail}\n```"
+            elif _should_treat_as_silent_death(
+                result_text=result_text,
+                exit_code=exit_code,
+                timed_out=timed_out,
+                session_state=str(session.get("state") or ""),
+            ):
+                elapsed_total = round(time.monotonic() - started, 1)
+                turn_count = len(session.get("turns", []))
+                log.warning(
+                    "agent_exec_silent_death",
+                    thread=resolved_thread_key,
+                    elapsed_s=elapsed_total,
+                    turn_count=turn_count,
+                    harness=session["harness"],
+                    engine=str(session.get("engine") or ""),
+                )
+                # Clear stale harness session id so next turn starts fresh.
+                with _sessions_lock:
+                    session["agent_thread_id"] = None
+                result_text = (
+                    "I wasn't able to produce a response — this can happen when a "
+                    "conversation gets very long. I've reset my session, so your next "
+                    "message will start fresh and should work."
+                )
 
             output_quality = apply_output_quality(result_text)
             result_text = output_quality.text

@@ -27,6 +27,7 @@ import psycopg2
 import psycopg2.extras
 import structlog
 from docker.errors import NotFound
+from openai import OpenAI
 from toon_format import decode as toon_decode
 
 from api.harness_events import normalize_harness_event
@@ -127,6 +128,8 @@ POOL_SIZE = int(os.getenv("AGENT_POOL_SIZE", "0"))
 _SLACK_POST_TIMEOUT_S = 20.0
 _SLACKBOT_URL = os.getenv("SLACKBOT_URL", "http://slackbot:3001")
 _THREAD_NAME_MAX_CHARS = 60
+_THREAD_NAMING_MODEL = os.getenv("THREAD_NAMING_MODEL", "gpt-5-mini").strip() or "gpt-5-mini"
+_THREAD_NAMING_TIMEOUT_S = 12.0
 _THREAD_CONTEXT_DELIMITER = "---"
 _MAX_PENDING_CONTEXT_MESSAGES = 18
 _MAX_PENDING_CONTEXT_CHARS = 6000
@@ -723,16 +726,13 @@ def _dashboards_to_slack(text: str) -> str:
 
 
 def _thread_name_from_user_message(raw_message: str) -> str | None:
-    text = str(raw_message or "").strip()
+    text = _display_user_message(str(raw_message or "")) or str(raw_message or "").strip()
     if not text:
         return None
 
-    if _THREAD_CONTEXT_DELIMITER in text:
-        text = text.split(_THREAD_CONTEXT_DELIMITER, 1)[1]
-
     text = _SLACK_MENTION_RE.sub(" ", text)
     text = _PLAIN_MENTION_RE.sub(" ", text)
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    lines = [re.sub(r"^\s*[-*]\s*", "", line).strip() for line in text.splitlines() if line.strip()]
     if not lines:
         return None
 
@@ -740,6 +740,98 @@ def _thread_name_from_user_message(raw_message: str) -> str | None:
     if not first_line:
         return None
     return first_line[:_THREAD_NAME_MAX_CHARS].rstrip() or None
+
+
+def _sanitize_generated_thread_name(raw_title: str) -> str | None:
+    title = str(raw_title or "").strip().strip('"').strip("'").rstrip(".")
+    if not title:
+        return None
+    title = _SLACK_MENTION_RE.sub(" ", title)
+    title = _PLAIN_MENTION_RE.sub(" ", title)
+    title = re.sub(r"\s+", " ", title).strip(" -:")
+    if not title:
+        return None
+    return title[:_THREAD_NAME_MAX_CHARS].rstrip() or None
+
+
+def _generate_contextual_thread_name(user_message: str, result: str) -> str | None:
+    cleaned_message = _display_user_message(user_message) or str(user_message or "").strip()
+    cleaned_result = str(result or "").strip()
+    if not cleaned_message or not cleaned_result:
+        return None
+
+    openai_key = _fetch_secret("OPENAI_API_KEY").strip()
+    if not openai_key:
+        return None
+
+    prompt = cleaned_message[:500]
+    if cleaned_result:
+        prompt += f"\n\nAssistant response (first 300 chars):\n{cleaned_result[:300]}"
+
+    try:
+        client = OpenAI(api_key=openai_key, timeout=_THREAD_NAMING_TIMEOUT_S)
+        resp = client.chat.completions.create(
+            model=_THREAD_NAMING_MODEL,
+            max_tokens=30,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Write a short human-readable title (3-6 words) for this AI agent conversation. "
+                        "Prefer the user's actual task, not Slack context headers or system scaffolding. "
+                        "Use sentence case, no period. Reply with ONLY the title."
+                    ),
+                },
+                {"role": "user", "content": prompt},
+            ],
+        )
+    except Exception as exc:
+        log.debug("thread_name_generation_failed", error=str(exc))
+        return None
+
+    content = str((resp.choices[0].message.content or "") if resp.choices else "")
+    return _sanitize_generated_thread_name(content)
+
+
+def _refresh_thread_name_after_first_turn(thread_key: str, user_message: str, result: str) -> None:
+    simple_name = _thread_name_from_user_message(user_message)
+    generated_name = _generate_contextual_thread_name(user_message, result)
+    if not generated_name or generated_name == simple_name:
+        return
+
+    session = get_session_state(thread_key)
+    if session:
+        with _sessions_lock:
+            current_name = str(session.get("thread_name") or "").strip()
+            if current_name and simple_name and current_name != simple_name:
+                return
+            if current_name == generated_name:
+                return
+            session["thread_name"] = generated_name
+        _persist_session(session, thread_key)
+        return
+
+    _pg_write(
+        "UPDATE agent_sessions SET thread_name = %s WHERE slack_thread_key = %s",
+        (generated_name, thread_key),
+    )
+
+
+def _schedule_thread_name_refresh(thread_key: str, user_message: str, result: str) -> None:
+    if not str(result or "").strip():
+        return
+
+    def run() -> None:
+        try:
+            _refresh_thread_name_after_first_turn(thread_key, user_message, result)
+        except Exception:
+            log.exception("thread_name_refresh_failed", thread=thread_key)
+
+    threading.Thread(
+        target=run,
+        daemon=True,
+        name=f"thread-name-refresh:{thread_key[-12:]}",
+    ).start()
 
 
 def _should_treat_as_silent_death(
@@ -2420,6 +2512,7 @@ class AgentClient:
 
             if session.get("mode") != requested_mode:
                 session["mode"] = requested_mode
+            suggested_thread_name = _thread_name_from_user_message(display_message)
 
             pending_context_items = drain_pending_context_messages(resolved_thread_key)
             pending_context = _format_pending_context_block(pending_context_items)
@@ -2485,6 +2578,8 @@ class AgentClient:
 
             started_ts = time.time()
             with _sessions_lock:
+                if suggested_thread_name and not str(session.get("thread_name") or "").strip():
+                    session["thread_name"] = suggested_thread_name
                 session["state"] = "working"
                 session["last_activity"] = started_ts
             _persist_session(session, resolved_thread_key)
@@ -2746,7 +2841,7 @@ class AgentClient:
             _persist_turn(resolved_thread_key, live_turn)
 
             with _sessions_lock:
-                if live_turn["turn_id"] == 1 and not str(session.get("thread_name") or "").strip():
+                if not str(session.get("thread_name") or "").strip():
                     suggested_name = _thread_name_from_user_message(
                         str(live_turn.get("user_message") or "")
                     )
@@ -2764,6 +2859,17 @@ class AgentClient:
                     session["state"] = "idle"
                 session["last_activity"] = time.time()
             _persist_session(session, resolved_thread_key)
+            if (
+                live_turn["turn_id"] == 1
+                and not timed_out
+                and exit_code in (0, None)
+                and result_text.strip()
+            ):
+                _schedule_thread_name_refresh(
+                    resolved_thread_key,
+                    str(live_turn.get("user_message") or ""),
+                    result_text,
+                )
             # Compute per-turn LLM stats from events
             llm_calls = 0
             total_input_tokens = 0
@@ -2894,7 +3000,7 @@ class AgentClient:
                 "last_activity": time.time(),
                 "turns": [],
                 "pending_context_messages": [],
-                "thread_name": None,
+                "thread_name": _thread_name_from_user_message(display_message),
                 "next_event_seq": 1,
             })
 

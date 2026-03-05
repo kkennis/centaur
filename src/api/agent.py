@@ -13,6 +13,7 @@ import os
 import re
 import socket
 import tarfile
+import textwrap
 import threading
 import time
 from collections.abc import Callable
@@ -26,6 +27,7 @@ import psycopg2
 import psycopg2.extras
 import structlog
 from docker.errors import NotFound
+from toon_format import decode as toon_decode
 
 from api.harness_events import normalize_harness_event
 from shared.tool_sdk import _sm_read
@@ -519,6 +521,225 @@ _MD_BOLD_STAR_RE = re.compile(r"\*\*(.+?)\*\*")
 _MD_BOLD_UNDER_RE = re.compile(r"__(.+?)__")
 _MD_STRIKE_RE = re.compile(r"~~(.+?)~~")
 
+_DASHBOARD_BLOCK_RE = re.compile(r"```dashboard\n([\s\S]*?)```")
+
+_CURRENCY_FMT_THRESHOLDS = [
+    (1_000_000_000, 1_000_000_000, "B"),
+    (1_000_000, 1_000_000, "M"),
+    (1_000, 1_000, "K"),
+]
+
+
+def _fmt_cell(value: object, fmt: str) -> str:
+    if value is None:
+        return "—"
+    if fmt == "currency":
+        try:
+            n = float(value)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return str(value)
+        for threshold, divisor, suffix in _CURRENCY_FMT_THRESHOLDS:
+            if abs(n) >= threshold:
+                return f"${n / divisor:,.1f}{suffix}"
+        return f"${n:,.0f}"
+    if fmt == "percent":
+        try:
+            n = float(value)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return str(value)
+        if abs(n) < 1:
+            n *= 100
+        sign = "+" if n > 0 else ""
+        return f"{sign}{n:.1f}%"
+    if fmt == "number":
+        try:
+            n = float(value)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return str(value)
+        return f"{n:,.2f}"
+    if fmt == "date":
+        return str(value)[:10]
+    return str(value)
+
+
+def _parse_dashboard_kv(lines: list[str]) -> tuple[dict[str, str], str | None]:
+    kv: dict[str, str] = {}
+    data_block: str | None = None
+    in_data = False
+    for line in lines:
+        if in_data:
+            data_block = (data_block or "") + "\n" + line
+            continue
+        idx = line.find(":")
+        if idx == -1:
+            continue
+        key = line[:idx].strip()
+        val = line[idx + 1 :].strip()
+        if key == "data":
+            if val:
+                data_block = val
+            else:
+                in_data = True
+            continue
+        kv[key] = val
+    return kv, data_block
+
+
+def _decode_toon_data(raw: str) -> list[dict[str, object]]:
+    """Decode TOON tabular data, falling back to simple CSV-like parsing."""
+    cleaned = textwrap.dedent(raw)
+    try:
+        result = toon_decode(cleaned)
+        if isinstance(result, list) and result:
+            return result  # type: ignore[return-value]
+    except Exception:
+        pass
+
+    # Fallback: parse [N]{col1,col2,...}: header manually
+    lines = [ln.strip() for ln in cleaned.strip().splitlines() if ln.strip()]
+    if not lines:
+        return []
+    header_match = re.match(r"\[\d+\]\{(.+?)\}:", lines[0])
+    if not header_match:
+        return []
+    cols = [c.strip() for c in header_match.group(1).split(",")]
+    rows: list[dict[str, object]] = []
+    for line in lines[1:]:
+        vals = [v.strip() for v in line.split(",")]
+        row: dict[str, object] = {}
+        for i, col in enumerate(cols):
+            cell = vals[i] if i < len(vals) else ""
+            try:
+                row[col] = float(cell) if "." in cell else int(cell)
+            except (ValueError, TypeError):
+                row[col] = cell
+        rows.append(row)
+    return rows
+
+
+def _parse_columns_spec(raw: str) -> list[tuple[str, str]]:
+    """Parse 'name:format,name2:format2' into [(key, format), ...]."""
+    result = []
+    for part in raw.split(","):
+        part = part.strip()
+        if ":" in part:
+            key, fmt = part.split(":", 1)
+            result.append((key.strip(), fmt.strip()))
+        else:
+            result.append((part, "text"))
+    return result
+
+
+def _render_dashboard_for_slack(raw_spec: str) -> str:
+    """Convert a single dashboard spec body into Slack-friendly text."""
+    sections = raw_spec.split("\n---\n")
+    if len(sections) < 2:
+        return raw_spec
+
+    # Parse header
+    header_kv, _ = _parse_dashboard_kv(sections[0].splitlines())
+    title = header_kv.get("title", "")
+    parts: list[str] = [f"*{title}*"] if title else []
+
+    kpi_parts: list[str] = []
+    for section_body in sections[1:]:
+        kv, data_block = _parse_dashboard_kv(section_body.strip().splitlines())
+        comp_type = kv.get("type", "")
+
+        if comp_type == "kpi-card":
+            label = kv.get("label", "")
+            val = _fmt_cell(kv.get("value"), kv.get("format", "number"))
+            delta_raw = kv.get("delta")
+            delta = ""
+            if delta_raw is not None:
+                try:
+                    d = float(delta_raw)
+                    arrow = "↑" if d >= 0 else "↓"
+                    delta = f" ({arrow}{abs(d):.1f}%)"
+                except ValueError:
+                    pass
+            kpi_parts.append(f"*{label}:* {val}{delta}")
+
+        elif comp_type == "data-table":
+            cols_raw = kv.get("columns", "")
+            if not cols_raw:
+                continue
+            cols = _parse_columns_spec(cols_raw)
+            data = _decode_toon_data(data_block) if data_block else []
+            comp_title = kv.get("title")
+            if comp_title:
+                parts.append(f"*{comp_title}*")
+            # Render as monospace block for alignment
+            header_labels = [c[0] for c in cols]
+            rows_text: list[list[str]] = []
+            max_rows = 20
+            for row in data[:max_rows]:
+                rows_text.append([_fmt_cell(row.get(c[0]), c[1]) for c in cols])
+            # Calculate column widths
+            col_widths = [len(h) for h in header_labels]
+            for row_cells in rows_text:
+                for i, cell in enumerate(row_cells):
+                    if i < len(col_widths):
+                        col_widths[i] = max(col_widths[i], len(cell))
+            # Build table
+            header_line = "  ".join(
+                h.ljust(col_widths[i]) for i, h in enumerate(header_labels)
+            )
+            sep_line = "  ".join("-" * w for w in col_widths)
+            table_lines = [header_line, sep_line]
+            for row_cells in rows_text:
+                table_lines.append(
+                    "  ".join(
+                        cell.ljust(col_widths[i]) if i < len(col_widths) else cell
+                        for i, cell in enumerate(row_cells)
+                    )
+                )
+            if len(data) > max_rows:
+                table_lines.append(f"... and {len(data) - max_rows} more rows")
+            parts.append("```" + "\n".join(table_lines) + "```")
+
+        elif comp_type in ("line-chart", "bar-chart", "pie-chart"):
+            comp_title = kv.get("title", comp_type)
+            data = _decode_toon_data(data_block) if data_block else []
+            lines_out = [f"*{comp_title}*"]
+            max_items = 10
+            for row in data[:max_items]:
+                if comp_type == "line-chart":
+                    x_key = kv.get("xKey", "")
+                    y_keys = [k.strip() for k in kv.get("yKeys", "").split(",")]
+                    vals = ", ".join(str(row.get(k, "—")) for k in y_keys)
+                    lines_out.append(f"{row.get(x_key, '?')} → {vals}")
+                elif comp_type == "bar-chart":
+                    cat_key = kv.get("categoryKey", "")
+                    val_key = kv.get("valueKey", "")
+                    lines_out.append(f"{row.get(cat_key, '?')}: {row.get(val_key, '—')}")
+                else:
+                    label_key = kv.get("labelKey", "")
+                    val_key = kv.get("valueKey", "")
+                    lines_out.append(f"{row.get(label_key, '?')}: {row.get(val_key, '—')}")
+            if len(data) > max_items:
+                lines_out.append(f"_...and {len(data) - max_items} more_")
+            parts.append("\n".join(lines_out))
+
+    if kpi_parts:
+        parts.insert(1 if parts else 0, "  ·  ".join(kpi_parts))
+
+    return "\n\n".join(parts)
+
+
+def _dashboards_to_slack(text: str) -> str:
+    """Replace ```dashboard blocks with Slack-friendly text representations."""
+    result: list[str] = []
+    last_end = 0
+    for m in _DASHBOARD_BLOCK_RE.finditer(text):
+        result.append(text[last_end : m.start()])
+        result.append(_render_dashboard_for_slack(m.group(1)))
+        last_end = m.end()
+    if last_end == 0:
+        return text
+    result.append(text[last_end:])
+    return "".join(result)
+
 
 def _markdown_to_slack(text: str) -> str:
     """Convert standard Markdown formatting to Slack mrkdwn."""
@@ -573,7 +794,7 @@ def _post_to_slack(
     if parts is None:
         return
     channel, thread_ts = parts
-    safe_text = _truncate_slack_message(_markdown_to_slack(text))
+    safe_text = _truncate_slack_message(_markdown_to_slack(_dashboards_to_slack(text)))
     if not safe_text:
         return
     logger = log.warning if warn_on_error else log.debug

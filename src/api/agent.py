@@ -2604,7 +2604,18 @@ class AgentClient:
                 "timed_out": False,
                 "duration_s": 0,
             }
-            live_turn["events"].append(
+            next_event_seq = 1
+
+            def _append_live_event(payload: dict[str, Any], *, emit_event: bool = False) -> None:
+                nonlocal next_event_seq
+                event_payload = dict(payload)
+                event_payload["event_seq"] = next_event_seq
+                next_event_seq += 1
+                live_turn["events"].append(event_payload)
+                if emit_event:
+                    _emit(event_payload)
+
+            _append_live_event(
                 {
                     "type": "thread.message",
                     "message_type": "command",
@@ -2699,25 +2710,24 @@ class AgentClient:
                                     for normalized in normalized_events:
                                         normalized["received_at"] = now
                                         normalized["elapsed_s"] = elapsed
-                                        live_turn["events"].append(normalized)
-                                        _emit(normalized)
+                                        _append_live_event(normalized, emit_event=True)
                                 else:
-                                    live_turn["events"].append(
+                                    _append_live_event(
                                         {
                                             "type": "raw",
                                             "text": stripped,
                                             "received_at": now,
                                             "elapsed_s": elapsed,
-                                        }
+                                        },
                                     )
                             except json.JSONDecodeError:
-                                live_turn["events"].append(
+                                _append_live_event(
                                     {
                                         "type": "raw",
                                         "text": stripped,
                                         "received_at": now,
                                         "elapsed_s": elapsed,
-                                    }
+                                    },
                                 )
                 if stderr_chunk:
                     err_buf += stderr_decoder.decode(stderr_chunk)
@@ -2744,19 +2754,18 @@ class AgentClient:
                         for normalized in normalized_events:
                             normalized["received_at"] = now
                             normalized["elapsed_s"] = elapsed
-                            live_turn["events"].append(normalized)
-                            _emit(normalized)
+                            _append_live_event(normalized, emit_event=True)
                     else:
-                        live_turn["events"].append(
+                        _append_live_event(
                             {
                                 "type": "raw",
                                 "text": stripped,
                                 "received_at": now,
                                 "elapsed_s": elapsed,
-                            }
+                            },
                         )
                 except json.JSONDecodeError:
-                    live_turn["events"].append(
+                    _append_live_event(
                         {"type": "raw", "text": stripped, "received_at": now, "elapsed_s": elapsed}
                     )
             if err_buf.strip():
@@ -2815,7 +2824,7 @@ class AgentClient:
 
             output_quality = apply_output_quality(result_text)
             result_text = output_quality.text
-            live_turn["events"].append(
+            _append_live_event(
                 {
                     "type": "output.quality",
                     "status": output_quality.status,
@@ -2986,7 +2995,6 @@ class AgentClient:
                 "turns": [],
                 "pending_context_messages": [],
                 "thread_name": _thread_name_from_user_message(display_message),
-                "next_event_seq": 1,
             })
 
         def run_execute() -> None:

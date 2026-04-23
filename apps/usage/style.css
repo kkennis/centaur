@@ -218,6 +218,7 @@ tbody td.num { text-align: right; }
 tbody td.method {
   font-size: 12px;
   white-space: normal;
+  text-align: center;
 }
 
 .ranked-name {

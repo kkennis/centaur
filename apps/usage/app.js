@@ -43,7 +43,7 @@ const USER_COLS = [
 
 const TEAM_COLS = [
   { key: "rank",        label: "#",        num: true,  noSort: true, w: "3.5%" },
-  { key: "team",        label: "Team",     num: false, w: "14%",     cls: "tool-name" },
+  { key: "team",        label: "Team",     num: false, w: "14%",     cls: "tool-name", hasEmoji: true },
   { key: "members",     label: "Members",  num: true,  w: "7%" },
   { key: "calls",       label: "Calls",    num: true,  w: "8%" },
   { key: "threads",     label: "Threads",  num: true,  w: "8%" },
@@ -154,6 +154,10 @@ function renderBody() {
       let val;
       if (c.key === "rank") {
         val = i + 1;
+      } else if (c.hasEmoji) {
+        val = `${r.emoji || ""} ${escapeHtml(r[c.key] || "")}`;
+      } else if (c.key === "team" && state.view === "users") {
+        val = `${r.team_emoji || ""} ${escapeHtml(r[c.key] || "")}`;
       } else if (c.num) {
         val = fmt(r[c.key]);
       } else {

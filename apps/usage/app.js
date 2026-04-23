@@ -6,11 +6,7 @@ let state = {
   view: "tools",
   sort: "threads",
   dir: "desc",
-  search: "",
-  minCalls: 0,
-  minUsers: 0,
-  userMinCalls: 0,
-  userMinThreads: 0,
+  window: "all",
 };
 
 const TOOL_COLS = [
@@ -75,7 +71,7 @@ const WORKFLOW_COLS = [
   { key: "success_rate", label: "Success%",   num: true,  w: "8%" },
   { key: "avg_duration_s", label: "Avg (s)",  num: true,  w: "8%" },
   { key: "first_seen",   label: "First",      num: false, w: "9%",  cls: "col-first" },
-  { key: "last_seen",    label: "Last",        num: false, w: "9%",  cls: "col-last" },
+  { key: "last_seen",    label: "Last",       num: false, w: "9%",  cls: "col-last" },
 ];
 
 const APP_COLS = [
@@ -102,6 +98,14 @@ function escapeHtml(s) {
   return d.innerHTML;
 }
 
+function windowCutoff() {
+  if (state.window === "all") return null;
+  const days = Number(state.window);
+  const d = new Date();
+  d.setDate(d.getDate() - days);
+  return d.toISOString().slice(0, 10);
+}
+
 function getCols() {
   if (state.view === "tools") return TOOL_COLS;
   if (state.view === "skills") return SKILL_COLS;
@@ -122,26 +126,12 @@ function getRows() {
 
   let rows = [...(src || [])];
 
-  if (state.search) {
-    const q = state.search.toLowerCase();
+  const cutoff = windowCutoff();
+  if (cutoff) {
     rows = rows.filter((r) => {
-      let fields;
-      if (state.view === "tools") fields = [r.tool, r.method1, r.method2, r.method3];
-      else if (state.view === "skills") fields = [r.skill, r.user1, r.user2, r.user3];
-      else if (state.view === "teams") fields = [r.team, r.member_list];
-      else if (state.view === "workflows") fields = [r.workflow];
-      else if (state.view === "apps") fields = [r.app, r.status];
-      else fields = [r.name, r.handle, r.team, r.tool1, r.tool2, r.tool3];
-      return fields.some((f) => f && f.toLowerCase().includes(q));
+      const last = r.last_seen || r.last;
+      return last && last >= cutoff;
     });
-  }
-
-  if (state.view === "tools") {
-    if (state.minCalls > 0) rows = rows.filter((r) => r.calls >= state.minCalls);
-    if (state.minUsers > 0) rows = rows.filter((r) => r.users >= state.minUsers);
-  } else if (state.view === "users") {
-    if (state.userMinCalls > 0) rows = rows.filter((r) => r.calls >= state.userMinCalls);
-    if (state.userMinThreads > 0) rows = rows.filter((r) => r.threads >= state.userMinThreads);
   }
 
   const key = state.sort;
@@ -248,14 +238,7 @@ function syncUrl(push) {
   const p = new URLSearchParams();
   if (state.sort && state.sort !== DEFAULT_SORT[state.view]) p.set("sort", state.sort);
   if (state.dir !== "desc") p.set("dir", state.dir);
-  if (state.search) p.set("q", state.search);
-  if (state.view === "tools") {
-    if (state.minCalls > 0) p.set("minCalls", state.minCalls);
-    if (state.minUsers > 0) p.set("minUsers", state.minUsers);
-  } else if (state.view === "users") {
-    if (state.userMinCalls > 0) p.set("minCalls", state.userMinCalls);
-    if (state.userMinThreads > 0) p.set("minThreads", state.userMinThreads);
-  }
+  if (state.window !== "all") p.set("window", state.window);
   const qs = p.toString();
   const url = viewPath(state.view) + (qs ? `?${qs}` : "");
   if (push) {
@@ -276,15 +259,8 @@ function loadStateFromUrl() {
   else state.sort = DEFAULT_SORT[state.view] || "calls";
   if (p.has("dir")) state.dir = p.get("dir");
   else state.dir = "desc";
-  if (p.has("q")) state.search = p.get("q");
-  else state.search = "";
-  if (state.view === "tools") {
-    state.minCalls = p.has("minCalls") ? Number(p.get("minCalls")) : 0;
-    state.minUsers = p.has("minUsers") ? Number(p.get("minUsers")) : 0;
-  } else if (state.view === "users") {
-    state.userMinCalls = p.has("minCalls") ? Number(p.get("minCalls")) : 0;
-    state.userMinThreads = p.has("minThreads") ? Number(p.get("minThreads")) : 0;
-  }
+  if (p.has("window")) state.window = p.get("window");
+  else state.window = "all";
 }
 
 function syncPills(name, value) {
@@ -295,19 +271,9 @@ function syncPills(name, value) {
   });
 }
 
-function syncFilterVisibility() {
-  $("#tools-filters").hidden = state.view !== "tools";
-  $("#users-filters").hidden = state.view !== "users";
-}
-
 function syncAllPills() {
   syncPills("view", state.view);
-  syncPills("min-calls", state.minCalls);
-  syncPills("min-users", state.minUsers);
-  syncPills("user-min-calls", state.userMinCalls);
-  syncPills("user-min-threads", state.userMinThreads);
-  $("#search").value = state.search;
-  syncFilterVisibility();
+  syncPills("window", state.window);
 }
 
 function init() {
@@ -317,7 +283,6 @@ function init() {
 
   loadStateFromUrl();
 
-  // Redirect bare path to /tools
   const cleanPath = location.pathname.replace(/\/$/, "");
   if (cleanPath === BASE_PATH) {
     history.replaceState(null, "", viewPath("tools"));
@@ -333,16 +298,15 @@ function init() {
       for (const u of static_.users) { if (u.pfp) pfpMap[u.handle] = u.pfp; }
       for (const u of (d.users || [])) { if (!u.pfp && pfpMap[u.handle]) u.pfp = pfpMap[u.handle]; }
     }
-      DATA = d;
-      // Compute calls_per_member for teams
-      if (DATA.teams) {
-        for (const t of DATA.teams) {
-          t.calls_per_member = t.members > 0 ? Math.round(t.calls / t.members * 10) / 10 : 0;
-        }
+    DATA = d;
+    if (DATA.teams) {
+      for (const t of DATA.teams) {
+        t.calls_per_member = t.members > 0 ? Math.round(t.calls / t.members * 10) / 10 : 0;
       }
-      syncAllPills();
-      render();
-    });
+    }
+    syncAllPills();
+    render();
+  });
 
   $$('input[name="view"]').forEach((r) => {
     r.addEventListener("change", () => {
@@ -350,46 +314,13 @@ function init() {
     });
   });
 
-  $$('input[name="min-calls"]').forEach((r) => {
+  $$('input[name="window"]').forEach((r) => {
     r.addEventListener("change", () => {
-      state.minCalls = Number(r.value);
-      syncPills("min-calls", r.value);
+      state.window = r.value;
+      syncPills("window", r.value);
       renderBody();
       syncUrl();
     });
-  });
-
-  $$('input[name="min-users"]').forEach((r) => {
-    r.addEventListener("change", () => {
-      state.minUsers = Number(r.value);
-      syncPills("min-users", r.value);
-      renderBody();
-      syncUrl();
-    });
-  });
-
-  $$('input[name="user-min-calls"]').forEach((r) => {
-    r.addEventListener("change", () => {
-      state.userMinCalls = Number(r.value);
-      syncPills("user-min-calls", r.value);
-      renderBody();
-      syncUrl();
-    });
-  });
-
-  $$('input[name="user-min-threads"]').forEach((r) => {
-    r.addEventListener("change", () => {
-      state.userMinThreads = Number(r.value);
-      syncPills("user-min-threads", r.value);
-      renderBody();
-      syncUrl();
-    });
-  });
-
-  $("#search").addEventListener("input", (e) => {
-    state.search = e.target.value;
-    renderBody();
-    syncUrl();
   });
 
   document.addEventListener("click", (e) => {
@@ -409,9 +340,6 @@ function init() {
     state.view = view;
     state.sort = DEFAULT_SORT[view] || "calls";
     state.dir = "desc";
-    state.search = "";
-    $("#search").value = "";
-    syncFilterVisibility();
     syncPills("view", state.view);
     renderHead();
     renderBody();
@@ -420,10 +348,6 @@ function init() {
 
   document.addEventListener("keydown", (e) => {
     const typing = ["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName);
-    if (e.key === "/" && !typing) {
-      e.preventDefault();
-      $("#search").focus();
-    }
     if (e.key === "d" && !typing) {
       document.documentElement.classList.toggle("light");
       localStorage.setItem("theme", document.documentElement.classList.contains("light") ? "light" : "dark");

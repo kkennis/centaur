@@ -18,6 +18,12 @@
       <span class="logo">Centaur Usage <img src="centaur.png" class="logo-icon" alt=""></span>
     </div>
     <div class="nav-right">
+      <div class="radio-group window-toggle">
+        <label class="radio-pill active"><input type="radio" name="window" value="all" checked> All</label>
+        <label class="radio-pill"><input type="radio" name="window" value="30d"> 30D</label>
+        <label class="radio-pill"><input type="radio" name="window" value="7d"> 7D</label>
+        <label class="radio-pill"><input type="radio" name="window" value="1d"> 1D</label>
+      </div>
       <div class="radio-group view-toggle">
         <label class="radio-pill active">
           <input type="radio" name="view" value="tools" checked> Tools
@@ -42,18 +48,6 @@
   </nav>
 
   <main>
-    <div class="controls">
-      <div class="filter-row">
-        <span class="filter-label">Window:</span>
-        <div class="radio-group">
-          <label class="radio-pill active"><input type="radio" name="window" value="all" checked> All</label>
-          <label class="radio-pill"><input type="radio" name="window" value="30"> 30D</label>
-          <label class="radio-pill"><input type="radio" name="window" value="7"> 7D</label>
-          <label class="radio-pill"><input type="radio" name="window" value="1"> 1D</label>
-        </div>
-      </div>
-    </div>
-
     <div class="table-info">
       <span id="row-count"></span>
     </div>

@@ -98,14 +98,6 @@ function escapeHtml(s) {
   return d.innerHTML;
 }
 
-function windowCutoff() {
-  if (state.window === "all") return null;
-  const days = Number(state.window);
-  const d = new Date();
-  d.setDate(d.getDate() - days);
-  return d.toISOString().slice(0, 10);
-}
-
 function getCols() {
   if (state.view === "tools") return TOOL_COLS;
   if (state.view === "skills") return SKILL_COLS;
@@ -125,14 +117,6 @@ function getRows() {
   else src = DATA.users;
 
   let rows = [...(src || [])];
-
-  const cutoff = windowCutoff();
-  if (cutoff) {
-    rows = rows.filter((r) => {
-      const last = r.last_seen || r.last;
-      return last && last >= cutoff;
-    });
-  }
 
   const key = state.sort;
   const mult = state.dir === "desc" ? -1 : 1;
@@ -290,25 +274,49 @@ function init() {
     history.replaceState(null, "", viewPath("tools"));
   }
 
+  let WINDOWED = null;
+  let PFP_MAP = {};
+
   Promise.all([
     fetch("api/stats").then((r) => r.ok ? r.json() : Promise.reject("api")).catch(() => null),
     fetch("data.json").then((r) => r.json()).catch(() => null),
   ]).then(([live, static_]) => {
-    const d = live || static_ || { tools: [], skills: [], users: [], teams: [], apps: [], workflows: [] };
+    // Build pfp map from static data
     if (static_ && static_.users) {
-      const pfpMap = {};
-      for (const u of static_.users) { if (u.pfp) pfpMap[u.handle] = u.pfp; }
-      for (const u of (d.users || [])) { if (!u.pfp && pfpMap[u.handle]) u.pfp = pfpMap[u.handle]; }
+      for (const u of static_.users) { if (u.pfp) PFP_MAP[u.handle] = u.pfp; }
     }
-    DATA = d;
-    if (DATA.teams) {
-      for (const t of DATA.teams) {
-        t.calls_per_member = t.members > 0 ? Math.round(t.calls / t.members * 10) / 10 : 0;
-      }
+
+    // Handle windowed vs flat data
+    if (live && live.windows) {
+      WINDOWED = live.windows;
+    } else {
+      // Flat data (old format or static fallback)
+      const d = live || static_ || {};
+      WINDOWED = { all: d, "30d": d, "7d": d, "1d": d };
     }
+
+    applyWindow();
     syncAllPills();
     render();
   });
+
+  function applyWindow() {
+    const w = WINDOWED ? WINDOWED[state.window] || WINDOWED["all"] : {};
+    DATA = {
+      tools: w.tools || [],
+      skills: w.skills || [],
+      users: w.users || [],
+      teams: w.teams || [],
+      apps: w.apps || [],
+      workflows: w.workflows || [],
+    };
+    // Merge pfps
+    for (const u of DATA.users) { if (!u.pfp && PFP_MAP[u.handle]) u.pfp = PFP_MAP[u.handle]; }
+    // Compute calls_per_member for teams
+    for (const t of DATA.teams) {
+      t.calls_per_member = t.members > 0 ? Math.round(t.calls / t.members * 10) / 10 : 0;
+    }
+  }
 
   $$('input[name="view"]').forEach((r) => {
     r.addEventListener("change", () => {
@@ -320,8 +328,8 @@ function init() {
     r.addEventListener("change", () => {
       state.window = r.value;
       syncPills("window", r.value);
-      renderBody();
-      syncUrl();
+      applyWindow();
+      render();
     });
   });
 

@@ -52,7 +52,7 @@ const TEAM_COLS = [
   { key: "member_list", label: "Members",  num: false, w: "48%", noSort: true, cls: "member-list" },
 ];
 
-const DEFAULT_SORT = { tools: "threads", users: "calls", teams: "threads_per_member" };
+const DEFAULT_SORT = { tools: "threads", users: "threads", teams: "threads_per_member" };
 
 function fmt(n) {
   if (n == null) return "\u2014";

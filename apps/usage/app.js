@@ -310,8 +310,7 @@ function init() {
     history.replaceState(null, "", viewPath("tools"));
   }
 
-  // Try live API first, fall back to static data.json
-  fetch("/usage-stats")
+  fetch("api/stats")
     .then((r) => r.ok ? r.json() : Promise.reject("api"))
     .catch(() => fetch("data.json").then((r) => r.json()))
     .then((d) => {

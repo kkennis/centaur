@@ -68,7 +68,7 @@ const SKILL_COLS = [
 
 const APP_COLS = [
   { key: "rank",          label: "#",         num: true,  noSort: true, w: "3.5%" },
-  { key: "app",           label: "App",       num: false, w: "14%",     cls: "tool-name", hasAppLink: true },
+  { key: "app",           label: "App",       num: false, w: "14%",     cls: "tool-name", hasAppLink: true, hasAppEmoji: true },
   { key: "status",        label: "Status",    num: false, w: "7%",      cls: "col-status" },
   { key: "views",         label: "Views",     num: true,  w: "7%" },
   { key: "requests",      label: "Requests",  num: true,  w: "8%" },
@@ -191,7 +191,7 @@ function renderBody() {
 
   const html = rows.map((r, i) => {
     const tds = cols.map((c) => {
-      if (c.hasAppLink) return `<td class="tool-name"><a href="https://svc-ai.dayno.xyz/apps/${escapeHtml(r.app)}/" target="_blank" class="app-link">${escapeHtml(r.app)}</a></td>`;
+      if (c.hasAppLink) return `<td class="tool-name"><span class="tool-identity"><span class="team-emoji">${r.emoji || ""}</span><a href="https://svc-ai.dayno.xyz/apps/${escapeHtml(r.app)}/" target="_blank" class="app-link">${escapeHtml(r.app)}</a></span></td>`;
       if (c.hasSkillEmoji) return `<td class="tool-name"><span class="tool-identity"><span class="team-emoji">${r.emoji || ""}</span>${escapeHtml(r.skill)}</span></td>`;
       if (c.hasIcon && state.view === "tools") return renderToolCell(r);
       if (c.hasPfp && state.view === "users") return renderUserCell(r);

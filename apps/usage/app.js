@@ -41,11 +41,10 @@ const TEAM_COLS = [
   { key: "rank",        label: "#",        num: true,  noSort: true, w: "3.5%" },
   { key: "team",        label: "Team",     num: false, w: "13%",     cls: "tool-name", hasEmoji: true },
   { key: "members",     label: "Members",  num: true,  w: "7%" },
-  { key: "calls",       label: "Calls",    num: true,  w: "7%" },
-  { key: "threads",     label: "Sessions",  num: true,  w: "7%" },
-  { key: "calls_per_member", label: "C/M", num: true,  w: "5.5%" },
+  { key: "threads",     label: "Sessions",  num: true,  w: "7.5%" },
+  { key: "tokens",      label: "Tokens",   num: true,  w: "7%", fmt: "compact" },
   { key: "threads_per_member", label: "S/M", num: true, w: "5.5%" },
-  { key: "member_list", label: "Members",  num: false, w: "51.5%", noSort: true, cls: "member-list" },
+  { key: "member_list", label: "Members",  num: false, w: "56.5%", noSort: true, cls: "member-list" },
 ];
 
 const SKILL_COLS = [
@@ -365,9 +364,11 @@ function init() {
       };
     });
     DATA.users = DATA.users.filter(u => u.team !== "Other");
-    // Compute per-member metrics using full roster size
+    // Aggregate user tokens per team and compute per-member metrics
+    const teamTokens = {};
+    for (const u of DATA.users) { teamTokens[u.team] = (teamTokens[u.team] || 0) + (u.tokens || 0); }
     for (const t of DATA.teams) {
-      t.calls_per_member = t.members > 0 ? Math.round(t.calls / t.members * 10) / 10 : 0;
+      t.tokens = teamTokens[t.team] || 0;
       t.threads_per_member = t.members > 0 ? Math.round(t.threads / t.members * 10) / 10 : 0;
     }
   }

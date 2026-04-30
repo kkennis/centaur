@@ -44,7 +44,7 @@ const TEAM_COLS = [
   { key: "calls",       label: "Calls",    num: true,  w: "7%" },
   { key: "threads",     label: "Sessions",  num: true,  w: "7%" },
   { key: "calls_per_member", label: "C/M", num: true,  w: "5.5%" },
-  { key: "threads_per_member", label: "T/M", num: true, w: "5.5%" },
+  { key: "threads_per_member", label: "S/M", num: true, w: "5.5%" },
   { key: "member_list", label: "Members",  num: false, w: "51.5%", noSort: true, cls: "member-list" },
 ];
 

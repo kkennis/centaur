@@ -319,23 +319,42 @@ function init() {
     };
     // Merge pfps
     for (const u of DATA.users) { if (!u.pfp && PFP_MAP[u.handle]) u.pfp = PFP_MAP[u.handle]; }
-    // Ensure all teams appear, even with zero activity
-    const ALL_TEAMS = {
+    // Full team roster (independent of activity window)
+    const TEAM_ROSTER = {
+      "I&R": ["Georgios Konstantopoulos", "Matt Huang", "Dan Robinson", "Frankie xyz", "Alana Palmedo", "Arjun Balaji", "Alpin Yukseloglu", "Ricardo de Arruda", "Storm Slivkoff"],
+      "Finance": ["Lindsay Slocum", "Pam Tholen", "Jordan Qualls", "Spencer Fluetsch", "Asher Sedlin", "Vidhu Pinnamaraju", "Caleb Onofrei", "Alex Ehlers"],
+      "Admin": ["Elena Page", "Amy Sinclair", "Gracie Globerman", "Karina Berry", "Holly Morgan-Winsdale", "Nicki Lardieri", "Liz Khussein", "Flor Romero"],
+      "Engineering": ["Brandon Wong", "Chris Mann", "Katie Shia", "Chentai Kao", "Shogo Nakai"],
+      "Legal": ["Katie Biber", "Stefan Schropp", "Ben Hinshaw", "Alex Popescu"],
+      "Policy": ["Dominique Little", "Alex Grieve", "Justin Slaughter", "Madison Parker"],
+      "Operations": ["Jordan Kong", "Trevor Holmgren", "Ishan Goyal"],
+      "Communications": ["David Swain", "Chris Kraeuter", "Veit Moeller"],
+      "Events": ["Josie McGuinn", "Tony Coppola", "Karina Ruiz Garcia"],
+      "Talent": ["Chris Shu", "Dan McCarthy"],
+      "Trading": ["Rama Somayajula"],
+      "Centaur Internal": [],
+    };
+    const TEAM_EMOJIS = {
       "I&R": "\ud83d\udd2c", "Finance": "\ud83d\udcb0", "Admin": "\ud83d\udcc5",
       "Policy": "\ud83c\udfdb", "Communications": "\ud83d\udce2", "Legal": "\u2696\ufe0f",
       "Trading": "\ud83d\udcc8", "Events": "\ud83c\udf89", "Engineering": "\ud83d\udd27",
       "Talent": "\ud83d\udc65", "Operations": "\u2699\ufe0f", "Centaur Internal": "\ud83e\udd16",
-      "Other": "\ud83d\udcac",
     };
-    const present = new Set(DATA.teams.map(t => t.team));
-    for (const [name, emoji] of Object.entries(ALL_TEAMS)) {
-      if (!present.has(name)) {
-        DATA.teams.push({ team: name, members: 0, calls: 0, threads: 0, calls_per_member: 0, threads_per_member: 0, member_list: "", emoji });
-      }
-    }
-    // Compute calls_per_member for teams
+    // Ensure all teams appear with full roster, override member counts
+    const teamMap = new Map(DATA.teams.map(t => [t.team, t]));
+    DATA.teams = Object.entries(TEAM_ROSTER).map(([name, members]) => {
+      const existing = teamMap.get(name) || { calls: 0, threads: 0 };
+      return {
+        team: name, members: members.length, calls: existing.calls, threads: existing.threads,
+        calls_per_member: 0, threads_per_member: 0,
+        member_list: members.sort().join(", "), emoji: TEAM_EMOJIS[name] || "",
+      };
+    });
+    DATA.users = DATA.users.filter(u => u.team !== "Other");
+    // Compute per-member metrics using full roster size
     for (const t of DATA.teams) {
       t.calls_per_member = t.members > 0 ? Math.round(t.calls / t.members * 10) / 10 : 0;
+      t.threads_per_member = t.members > 0 ? Math.round(t.threads / t.members * 10) / 10 : 0;
     }
   }
 

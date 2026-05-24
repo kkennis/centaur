@@ -19,6 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from api.api_keys import bootstrap_service_api_keys
 from api.config import settings
 from api.db import close_pool, create_pool
+from api.sandbox.codex_auth import bootstrap_codex_auth_mode
 from api.laminar_tracing import (
     initialize_laminar,
     install_laminar_compat,
@@ -165,6 +166,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     global _shutting_down
 
     app.state.db_pool = await create_pool(settings.database_url)
+    bootstrap_codex_auth_mode()
     await bootstrap_service_api_keys(app.state.db_pool)
     execution_worker_enabled = os.getenv(
         "EXECUTION_WORKER_ENABLED", "1"

@@ -28,6 +28,20 @@ def pytest_configure(config):
     config.addinivalue_line("markers", "sandbox: requires running sandbox container")
 
 
+@pytest.fixture(autouse=True)
+def _isolate_codex_auth_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Clear the Codex auth env so dev shells with these exported don't poison
+    # unrelated tests, and reset the module-level cache so the resolver
+    # re-reads env between tests. Tests that exercise the explicit-selector
+    # branches set the other env vars (OPENAI_API_KEY,
+    # FIREWALL_MANAGER_SECRET_SOURCE) themselves.
+    for key in ("CODEX_AUTH_MODE", "CODEX_ACCESS_TOKEN"):
+        monkeypatch.delenv(key, raising=False)
+    import api.sandbox.codex_auth as _codex_auth
+
+    _codex_auth._active_mode = None
+
+
 def _pick_free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind(("127.0.0.1", 0))

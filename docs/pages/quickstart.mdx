@@ -73,8 +73,14 @@ placeholder values and [iron-proxy](https://docs.iron.sh) injects the real crede
 outbound requests.
 
 The default harness is `codex`, so `OPENAI_API_KEY` must exist in the configured
-secret source before Slack agent turns can complete. Use explicit harness
-selectors only when you want a non-default harness such as Amp or Claude Code.
+secret source before Slack agent turns can complete.
+
+To use ChatGPT/Codex account auth instead, set `CODEX_AUTH_MODE=access_token`
+and provide `CODEX_ACCESS_TOKEN` via the configured secret source. See
+[Deploying in production](/deploying-in-production) for the full rules.
+
+Use explicit harness selectors only when you want a non-default harness such as
+Amp or Claude Code.
 
 ## 3. Boot the stack
 

@@ -108,6 +108,10 @@ Other typed variants extend the same boundary in different ways:
 - **`gcp_auth`** resolves a Google service-account keyfile, mints Google OAuth
   tokens for the configured scopes, and injects those bearer tokens for the
   configured Google API hosts.
+- **`codex_agent_identity`** resolves a ChatGPT/Codex Agent Identity token,
+  registers a Codex task, and injects per-request Agent Assertion auth for
+  `chatgpt.com/backend-api/codex` while the sandbox sees only the
+  `CODEX_ACCESS_TOKEN` placeholder.
 - **`pg_dsn`** resolves the real upstream Postgres DSN inside iron-proxy. The
   sandbox receives a local DSN that points at its per-sandbox proxy listener,
   so tool code can connect normally without receiving the real database URL.

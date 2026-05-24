@@ -401,6 +401,36 @@ class TestBuildHarnessCmd:
         assert "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1" not in env
         assert "CLAUDE_CODE_ENABLE_OPUS_4_7_FAST_MODE=1" not in env
 
+    def test_container_env_omits_codex_access_token_when_unconfigured(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        from api.sandbox.config import container_env
+
+        monkeypatch.delenv("AGENT_LOCAL_DEV", raising=False)
+        monkeypatch.setenv("AGENT_API_URL", "http://api.internal:8000")
+        monkeypatch.delenv("CODEX_ACCESS_TOKEN", raising=False)
+
+        env = container_env("thread-key", "sandbox-id", "firewall.internal")
+
+        assert not any(item.startswith("CODEX_ACCESS_TOKEN=") for item in env)
+
+    def test_container_env_passes_codex_access_token_placeholder_when_configured(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        from api.sandbox.config import container_env
+
+        monkeypatch.delenv("AGENT_LOCAL_DEV", raising=False)
+        monkeypatch.setenv("AGENT_API_URL", "http://api.internal:8000")
+        monkeypatch.setenv("CODEX_ACCESS_TOKEN", "actual-access-token")
+        monkeypatch.setenv("CODEX_AUTH_MODE", "access_token")
+
+        env = container_env("thread-key", "sandbox-id", "firewall.internal")
+
+        assert "CODEX_ACCESS_TOKEN=CODEX_ACCESS_TOKEN" in env
+        assert "CODEX_ACCESS_TOKEN=actual-access-token" not in env
+
 
 class TestResolveHarnessProfile:
     def test_persona_uses_declared_engine_unless_harness_overrides(self, monkeypatch):

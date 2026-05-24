@@ -8,6 +8,7 @@ from urllib.parse import urlsplit
 
 from api.deps import mint_sandbox_token
 from api.sandbox.base import SandboxSession
+from api.sandbox.codex_auth import CodexAuthMode, codex_auth_mode
 
 
 def image() -> str:
@@ -138,6 +139,16 @@ def container_env(
     # before they reach the real upstream.
     for key in _HARNESS_STUB_KEYS:
         env.append(f"{key}={key}")
+    # Opt Codex into ChatGPT access-token auth only when the cached resolved
+    # mode (frozen at lifespan startup) selects it. Reading the cache avoids
+    # re-resolving per spawn — a stale env in a long-running process can't
+    # raise CodexAuthConfigError into a request handler or warm-pool tick.
+    # The sandbox-side entrypoint cross-checks CODEX_AUTH_MODE before
+    # actually flipping the Codex provider; placeholder presence alone
+    # doesn't switch modes.
+    if codex_auth_mode() is CodexAuthMode.ACCESS_TOKEN:
+        env.append("CODEX_ACCESS_TOKEN=CODEX_ACCESS_TOKEN")
+        env.append(f"CODEX_AUTH_MODE={CodexAuthMode.ACCESS_TOKEN.value}")
     for key in _SANDBOX_PASSTHROUGH_ENV_KEYS:
         value = (os.getenv(key) or "").strip()
         if value:

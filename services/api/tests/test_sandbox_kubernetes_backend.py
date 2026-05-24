@@ -189,6 +189,7 @@ def test_container_env_includes_firewall_host_for_secret_bootstrap(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("AGENT_API_URL", "http://api.internal:8000")
+    monkeypatch.delenv("CODEX_ACCESS_TOKEN", raising=False)
 
     env = sandbox_container_env(
         "thread-key",
@@ -202,9 +203,27 @@ def test_container_env_includes_firewall_host_for_secret_bootstrap(
     # iron-proxy rewrites the placeholder mid-flight.
     assert env_map["AMP_API_KEY"] == "AMP_API_KEY"
     assert env_map["OPENAI_API_KEY"] == "OPENAI_API_KEY"
+    assert "CODEX_ACCESS_TOKEN" not in env_map
     assert env_map["CENTAUR_TRACE_ID"] == "00000000-0000-0000-0000-000000000123"
     assert env_map["NO_PROXY"] == "localhost,127.0.0.1,firewall.internal,api.internal"
     assert env_map["no_proxy"] == env_map["NO_PROXY"]
+
+
+def test_container_env_includes_codex_access_token_placeholder_when_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AGENT_API_URL", "http://api.internal:8000")
+    monkeypatch.setenv("CODEX_ACCESS_TOKEN", "actual-access-token")
+    monkeypatch.setenv("CODEX_AUTH_MODE", "access_token")
+
+    env = sandbox_container_env(
+        "thread-key",
+        "sandbox-id",
+        "firewall.internal",
+    )
+    env_map = dict(item.split("=", 1) for item in env)
+
+    assert env_map["CODEX_ACCESS_TOKEN"] == "CODEX_ACCESS_TOKEN"
 
 
 def test_container_env_passes_laminar_otel_config(

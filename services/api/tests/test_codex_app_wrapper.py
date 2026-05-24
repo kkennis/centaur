@@ -138,6 +138,33 @@ def test_request_attaches_traceparent(monkeypatch) -> None:
     ]
 
 
+def test_codex_app_server_env_prefers_access_token_over_api_keys(monkeypatch) -> None:
+    wrapper = _load_wrapper()
+    monkeypatch.setenv("CODEX_ACCESS_TOKEN", "access-token")
+    monkeypatch.setenv("CODEX_API_KEY", "codex-api-key")
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-api-key")
+
+    env = wrapper._codex_app_server_env()
+
+    assert env["CODEX_ACCESS_TOKEN"] == "access-token"
+    assert "CODEX_API_KEY" not in env
+    assert "OPENAI_API_KEY" not in env
+
+
+def test_codex_app_server_env_preserves_api_keys_without_access_token(
+    monkeypatch,
+) -> None:
+    wrapper = _load_wrapper()
+    monkeypatch.delenv("CODEX_ACCESS_TOKEN", raising=False)
+    monkeypatch.setenv("CODEX_API_KEY", "codex-api-key")
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-api-key")
+
+    env = wrapper._codex_app_server_env()
+
+    assert env["CODEX_API_KEY"] == "codex-api-key"
+    assert env["OPENAI_API_KEY"] == "openai-api-key"
+
+
 def test_main_lazy_starts_app_server_after_input(monkeypatch) -> None:
     wrapper = _load_wrapper()
     requests: list[tuple[str, dict]] = []

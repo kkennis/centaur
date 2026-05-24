@@ -1,0 +1,19 @@
+# Codex CLI provider definition for ChatGPT/Codex account-auth mode.
+# entrypoint.sh composes this onto config.toml (and prepends a
+# `model_provider = "centaur_codex_access_token"` selector) when
+# CODEX_AUTH_MODE=access_token.
+
+[model_providers.centaur_codex_access_token]
+name = "OpenAI via Centaur Codex access token"
+base_url = "https://chatgpt.com/backend-api/codex"
+wire_api = "responses"
+supports_websockets = false
+
+[model_providers.centaur_codex_access_token.auth]
+command = "/usr/local/bin/centaur-codex-access-token"
+timeout_ms = 5000
+# 0 = re-invoke the helper on every request. The helper is a static
+# placeholder print, so per-request fork/exec cost is negligible and we
+# avoid any internal Codex-CLI auth cache that could outlast a token
+# rotation. If this becomes a latency hotspot, raise to e.g. 60_000.
+refresh_interval_ms = 0

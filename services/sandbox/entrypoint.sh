@@ -70,11 +70,38 @@ toml_escape() {
 }
 
 HARNESS_CONFIG_DIR="${CENTAUR_HARNESS_CONFIG_DIR:-$HOME_DIR/harness}"
+CODEX_CONFIG_PATH="$HOME_DIR/.codex/config.toml"
 if [ -f "$HARNESS_CONFIG_DIR/codex/config.toml" ]; then
-    cp "$HARNESS_CONFIG_DIR/codex/config.toml" "$HOME_DIR/.codex/config.toml"
+    cp "$HARNESS_CONFIG_DIR/codex/config.toml" "$CODEX_CONFIG_PATH"
 else
     echo "missing Codex harness config: $HARNESS_CONFIG_DIR/codex/config.toml" >&2
     exit 1
+fi
+
+if [ "${CODEX_AUTH_MODE:-}" = "access_token" ]; then
+    if [ "${CODEX_ACCESS_TOKEN:-}" != "CODEX_ACCESS_TOKEN" ]; then
+        echo "CODEX_AUTH_MODE=access_token requires the CODEX_ACCESS_TOKEN sandbox placeholder; got an unexpected value" >&2
+        exit 1
+    fi
+    # Codex CLI exposes the upstream URL + wire API + auth command only via
+    # a [model_providers.<name>] TOML table, with the active provider chosen
+    # by a root-level `model_provider` key. We compose the harness base
+    # config with our provider snippet by exploiting TOML's "multiple
+    # section declarations add to the same parent table" semantics:
+    #   (1) prepend the `model_provider` selector,
+    #   (2) cat the base harness config (no top-level model_provider —
+    #       pinned by test_harness_codex_config_has_no_top_level_model_provider),
+    #   (3) cat the access-token provider snippet.
+    # The result is a single valid TOML config, no shell-side TOML edits.
+    tmp_codex_config="$(mktemp)"
+    trap 'rm -f "$tmp_codex_config"' EXIT
+    {
+        printf '%s\n' 'model_provider = "centaur_codex_access_token"'
+        cat "$CODEX_CONFIG_PATH"
+        cat "$HARNESS_CONFIG_DIR/codex/access-token-provider.toml"
+    } > "$tmp_codex_config"
+    mv "$tmp_codex_config" "$CODEX_CONFIG_PATH"
+    trap - EXIT
 fi
 
 codex_laminar_trace_endpoint="${CODEX_OTEL_LAMINAR_ENDPOINT:-}"
@@ -197,11 +224,15 @@ if [ -x "$HARNESS_ADAPTER" ]; then
     "$HARNESS_ADAPTER" "${1:-}" "$TARGET_PROMPT"
 fi
 
-# Codex reads its auth file when the app server starts. Complete this before
-# signaling readiness, otherwise warm pods can be claimed with no auth loaded.
+# Codex reads its auth file when the app server starts for API-key mode.
+# Access-token mode uses command-backed provider auth instead because the
+# placeholder token is resolved by iron-proxy only after Codex sends a request.
+# Keep the trailing newline — `codex login --with-api-key` reads stdin
+# line-by-line and dropping it has been observed to corrupt the stored key
+# on some Codex CLI versions.
 CODEX_KEY="${CODEX_API_KEY:-${OPENAI_API_KEY:-}}"
-if [ -n "$CODEX_KEY" ]; then
-    echo "$CODEX_KEY" | codex login --with-api-key 2>/dev/null || true
+if [ "${CODEX_AUTH_MODE:-}" != "access_token" ] && [ -n "$CODEX_KEY" ]; then
+    printf '%s\n' "$CODEX_KEY" | codex login --with-api-key 2>/dev/null || true
 fi
 
 # Signal readiness

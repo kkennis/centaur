@@ -90,6 +90,7 @@ def start_app_server() -> None:
         APP = None
         APP_INITIALIZED = False
 
+    env = _codex_app_server_env()
     APP = subprocess.Popen(
         [
             "codex",
@@ -103,6 +104,7 @@ def start_app_server() -> None:
         text=True,
         bufsize=1,
         cwd=os.getcwd(),
+        env=env,
     )
     threading.Thread(target=app_stdout_reader, daemon=True).start()
     request(
@@ -116,6 +118,14 @@ def start_app_server() -> None:
     notify("initialized")
     APP_INITIALIZED = True
     emit({"type": "system", "subtype": "wrapper_heartbeat", "phase": "app_server_started"})
+
+
+def _codex_app_server_env() -> dict[str, str]:
+    env = os.environ.copy()
+    if (env.get("CODEX_ACCESS_TOKEN") or "").strip():
+        env.pop("CODEX_API_KEY", None)
+        env.pop("OPENAI_API_KEY", None)
+    return env
 
 
 def app_stdout_reader() -> None:

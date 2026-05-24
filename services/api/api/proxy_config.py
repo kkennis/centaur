@@ -12,6 +12,8 @@ tool_manager (injection map). The API server owns iron-proxy's full config:
   minting OAuth2 access tokens for the declared grant.
 - ``hmac_sign`` transforms — one per unique ``HmacSignSecret`` signing scheme,
   HMAC-signing each request and injecting the configured headers.
+- ``codex_agent_identity`` transform — resolves Codex Agent Identity JWTs,
+  registers agent tasks, and injects OpenAI ``AgentAssertion`` headers.
 - top-level ``postgres:`` — one listener per ``PgDsnSecret`` on sequential ports
   starting at 5432, ordered by name.
 """
@@ -26,6 +28,7 @@ from typing import Any
 import yaml
 
 from api.tool_manager import (
+    CodexAgentIdentitySecret,
     GcpAuthSecret,
     HmacSignSecret,
     HttpSecret,
@@ -51,7 +54,7 @@ GCP_AUTH_HOSTS: tuple[str, ...] = ("*.googleapis.com",)
 PG_LISTEN_PORT_BASE = 5432
 
 _MANAGED_TRANSFORMS: frozenset[str] = frozenset(
-    {"secrets", "gcp_auth", "oauth_token", "hmac_sign"}
+    {"secrets", "gcp_auth", "oauth_token", "hmac_sign", "codex_agent_identity"}
 )
 
 # Iron-proxy ``source`` schema for resolving secret values. ``env`` reads the
@@ -356,6 +359,37 @@ def _build_hmac_sign_transforms(
     return transforms
 
 
+def _build_codex_agent_identity_transform(
+    secrets: list[SecretDef],
+) -> dict[str, Any] | None:
+    """``codex_agent_identity`` transform for Codex access-token auth."""
+    identities: list[dict[str, Any]] = []
+    for secret in sorted(
+        (s for s in secrets if isinstance(s, CodexAgentIdentitySecret)),
+        key=lambda s: (s.name, s.secret_ref, s.hosts, s.paths, s.methods, s.header),
+    ):
+        rules: list[dict[str, Any]] = []
+        for host in sorted(secret.hosts):
+            rule: dict[str, Any] = {"host": host}
+            if secret.methods:
+                rule["methods"] = list(secret.methods)
+            if secret.paths:
+                rule["paths"] = list(secret.paths)
+            rules.append(rule)
+        entry: dict[str, Any] = {
+            "source": _build_source(secret.secret_ref),
+            "rules": rules,
+            "header": secret.header,
+            "placeholder": secret.placeholder,
+        }
+        if secret.authapi_base_url is not None:
+            entry["authapi_base_url"] = secret.authapi_base_url
+        identities.append(entry)
+    if not identities:
+        return None
+    return {"name": "codex_agent_identity", "config": {"identities": identities}}
+
+
 def _build_postgres_listeners(
     secrets: list[SecretDef],
     pg_listen_ports: dict[str, int],
@@ -399,9 +433,10 @@ def render_proxy_yaml(
 
     ``base_config`` is the seed config from ``services/iron-proxy/iron-proxy.yaml``
     (allowlist, header_allowlist, dns, proxy, management, tls, log). Managed
-    transforms (``secrets``, ``gcp_auth``, ``oauth_token``) are inserted before
-    ``header_allowlist``; existing managed entries are replaced. The top-level
-    ``postgres:`` list is overwritten.
+    transforms (``secrets``, ``gcp_auth``, ``oauth_token``, ``hmac_sign``,
+    ``codex_agent_identity``) are inserted before ``header_allowlist``;
+    existing managed entries are replaced. The top-level ``postgres:`` list
+    is overwritten.
     """
     if base_config is None:
         base_config = load_base_config()
@@ -420,6 +455,9 @@ def render_proxy_yaml(
     if oauth_token is not None:
         new_transforms.append(oauth_token)
     new_transforms.extend(_build_hmac_sign_transforms(secrets))
+    codex_agent_identity = _build_codex_agent_identity_transform(secrets)
+    if codex_agent_identity is not None:
+        new_transforms.append(codex_agent_identity)
     if new_transforms:
         for index, transform in enumerate(transforms):
             if (transform or {}).get("name") == "header_allowlist":

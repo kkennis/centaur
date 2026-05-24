@@ -13,6 +13,7 @@ from fastapi import FastAPI
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from api.tool_manager import (  # noqa: E402
+    CodexAgentIdentitySecret,
     _LIFECYCLE_METHODS,
     _describe_method_docstring,
     _friendly_type_name,
@@ -22,6 +23,19 @@ from api.tool_manager import (  # noqa: E402
     ToolManager,
     ToolMethod,
 )
+
+
+def test_infra_codex_access_token_authenticates_chatgpt_codex_requests() -> None:
+    secret = next(s for s in ToolManager._INFRA_SECRETS if s.name == "CODEX_ACCESS_TOKEN")
+
+    assert isinstance(secret, CodexAgentIdentitySecret)
+    assert secret.hosts == ("chatgpt.com",)
+    assert secret.paths == ("/backend-api/codex/*",)
+    # No methods restriction — every HTTP verb to /backend-api/codex/* must
+    # get the AgentAssertion injection, including future Codex CLI verbs.
+    assert secret.methods == ()
+    assert secret.header == "Authorization"
+    assert secret.placeholder == "CODEX_ACCESS_TOKEN"
 
 
 class TestDescribeMethodDocstring:

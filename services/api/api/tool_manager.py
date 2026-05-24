@@ -29,6 +29,7 @@ from toon_format import encode as toon_encode
 
 from api.api_keys import check_scope
 from api.laminar_tracing import set_span_attributes, start_span
+from api.sandbox.codex_auth import CodexAuthMode, codex_auth_mode
 from api.vm_metrics import record_tool_call
 from api.deps import get_key_info, get_sandbox_claims, verify_api_key
 from api import slackbot_client
@@ -256,8 +257,46 @@ class HmacSignSecret:
     allow_chunked_body: bool = False
 
 
+@dataclass(frozen=True)
+class CodexAgentIdentitySecret:
+    """Codex Agent Identity JWT resolved and signed by iron-proxy.
+
+    The sandbox sees ``placeholder`` in ``header``. iron-proxy resolves
+    ``secret_ref``, registers an agent task, and replaces the placeholder with
+    an OpenAI ``AgentAssertion`` header on matching ``hosts`` / ``paths``.
+
+    Wire contract with iron-proxy: Codex CLI's auth-command helper prints the
+    bare placeholder string (e.g. ``CODEX_ACCESS_TOKEN``), Codex constructs
+    ``Authorization: Bearer CODEX_ACCESS_TOKEN``, and the iron-proxy
+    ``codex_agent_identity`` transform substring-matches the placeholder
+    inside that header value before substituting in the real Agent Assertion.
+    The companion iron-proxy implementation MUST treat ``placeholder`` as a
+    substring match, not an exact match on the full header — keep this in
+    sync with the proxy side or both sides need to switch to ``"Bearer X"``
+    semantics together.
+    """
+
+    name: str
+    secret_ref: str
+    hosts: tuple[str, ...]
+    header: str = "Authorization"
+    placeholder: str = ""
+    authapi_base_url: str | None = None
+    paths: tuple[str, ...] = ()
+    methods: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not self.placeholder:
+            object.__setattr__(self, "placeholder", self.name)
+
+
 SecretDef = (
-    HttpSecret | GcpAuthSecret | PgDsnSecret | OAuthTokenSecret | HmacSignSecret
+    HttpSecret
+    | GcpAuthSecret
+    | PgDsnSecret
+    | OAuthTokenSecret
+    | HmacSignSecret
+    | CodexAgentIdentitySecret
 )
 
 # Per-grant credential fields: grant -> (required, optional). Field names are
@@ -842,10 +881,11 @@ async def _resolve_secrets(secrets: list[SecretDef]) -> dict[str, str]:
     ``ToolContext`` — the tool gets back the ``replacer`` token, which iron-proxy
     swaps for the real credential at the network boundary. Inject-mode HTTP
     secrets are applied entirely by iron-proxy and never reach the tool.
-    ``GcpAuthSecret``, ``OAuthTokenSecret`` and ``PgDsnSecret`` are likewise not
-    exposed via context: gcp_auth and oauth_token are minted and injected on the
-    wire by iron-proxy, and pg_dsn reaches the tool as an environment variable
-    set on the sandbox by the kubernetes backend.
+    ``GcpAuthSecret``, ``OAuthTokenSecret``, ``CodexAgentIdentitySecret`` and
+    ``PgDsnSecret`` are likewise not exposed via context: gcp_auth, oauth_token,
+    and codex_agent_identity are minted or signed on the wire by iron-proxy, and
+    pg_dsn reaches the tool as an environment variable set on the sandbox by the
+    kubernetes backend.
     """
     return {s.name: s.replacer for s in secrets if _is_replace_secret(s)}
 
@@ -1589,9 +1629,9 @@ class ToolManager:
         )
         return loaded
 
-    # Hardcoded infrastructure secrets for the injection map. Each ``HttpSecret``
+    # Hardcoded infrastructure secrets for the injection map. Each secret
     # carries the hosts iron-proxy attaches it to.
-    _INFRA_SECRETS: ClassVar[list[HttpSecret]] = [
+    _INFRA_SECRETS: ClassVar[list[SecretDef]] = [
         HttpSecret(
             name="ANTHROPIC_API_KEY",
             secret_ref="ANTHROPIC_API_KEY",
@@ -1603,6 +1643,16 @@ class ToolManager:
             secret_ref="OPENAI_API_KEY",
             hosts=("api.openai.com",),
             match_headers=("Authorization",),
+        ),
+        CodexAgentIdentitySecret(
+            name="CODEX_ACCESS_TOKEN",
+            secret_ref="CODEX_ACCESS_TOKEN",
+            hosts=("chatgpt.com",),
+            paths=("/backend-api/codex/*",),
+            # Intentionally no method restriction: future Codex CLI verbs
+            # (PUT/PATCH/DELETE/OPTIONS) must still get the AgentAssertion
+            # injection on this path. The path scope is the real boundary.
+            header="Authorization",
         ),
         HttpSecret(
             name="XAI_API_KEY",
@@ -1641,8 +1691,20 @@ class ToolManager:
 
         Every ``HttpSecret``, ``GcpAuthSecret`` and ``OAuthTokenSecret`` carries
         its own ``hosts``; ``PgDsnSecret`` is a TCP listener with no host.
+
+        ``CodexAgentIdentitySecret`` is filtered out unless the resolved
+        :func:`api.sandbox.codex_auth.codex_auth_mode` is ``access_token``: iron
+        proxy should only render the chatgpt.com transform when account-auth
+        is actually opted in, otherwise the transform sits dormant pointing
+        at an unresolvable ``CODEX_ACCESS_TOKEN`` env var.
         """
-        out: list[SecretDef] = list(self._INFRA_SECRETS)
+        active_mode = codex_auth_mode()
+        out: list[SecretDef] = [
+            s
+            for s in self._INFRA_SECRETS
+            if not isinstance(s, CodexAgentIdentitySecret)
+            or active_mode is CodexAuthMode.ACCESS_TOKEN
+        ]
         for lt in self.tools.values():
             out.extend(lt.all_secrets)
         return out

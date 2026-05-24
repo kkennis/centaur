@@ -9,6 +9,7 @@ from api.proxy_config import (
     render_proxy_yaml,
 )
 from api.tool_manager import (
+    CodexAgentIdentitySecret,
     DEFAULT_MATCH_HEADERS,
     GcpAuthSecret,
     HmacHeader,
@@ -1441,7 +1442,7 @@ def test_render_emits_postgres_listeners_with_env_refs(
     ]
     cfg = yaml.safe_load(render_proxy_yaml(secrets))
     listeners = cfg["postgres"]
-    assert [l["name"] for l in listeners] == ["analytics_pg", "database_url"]
+    assert [listener["name"] for listener in listeners] == ["analytics_pg", "database_url"]
     assert listeners[0]["listen"] == "0.0.0.0:5432"
     assert listeners[1]["listen"] == "0.0.0.0:5433"
     # upstream.dsn uses the secret_ref directly so iron-proxy can resolve it
@@ -1505,4 +1506,34 @@ def test_render_groups_header_secret_hosts_when_repeated() -> None:
         "github.com",
         "api.github.com",
         "uploads.github.com",
+    }
+
+
+def test_render_emits_codex_agent_identity_transform() -> None:
+    secrets = [
+        CodexAgentIdentitySecret(
+            "CODEX_ACCESS_TOKEN",
+            "CODEX_ACCESS_TOKEN",
+            hosts=("chatgpt.com",),
+            paths=("/backend-api/codex/*",),
+            methods=("GET", "POST"),
+            header="Authorization",
+        )
+    ]
+    cfg = yaml.safe_load(render_proxy_yaml(secrets))
+    names = [t["name"] for t in cfg["transforms"]]
+    assert names == ["allowlist", "codex_agent_identity", "header_allowlist"]
+    transform = next(t for t in cfg["transforms"] if t["name"] == "codex_agent_identity")
+    identity = transform["config"]["identities"][0]
+    assert identity == {
+        "source": {"type": "env", "var": "CODEX_ACCESS_TOKEN"},
+        "rules": [
+            {
+                "host": "chatgpt.com",
+                "methods": ["GET", "POST"],
+                "paths": ["/backend-api/codex/*"],
+            }
+        ],
+        "header": "Authorization",
+        "placeholder": "CODEX_ACCESS_TOKEN",
     }
